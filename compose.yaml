@@ -1,0 +1,39 @@
+# Dev stack: `docker compose up -d postgres` for tests / `npm run dev`;
+# `docker compose up --build` runs postgres + gateway (needs .env with TELEGRAM_BOT_TOKEN).
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: gateway
+      POSTGRES_PASSWORD: gateway
+      POSTGRES_DB: gateway
+    ports:
+      - "${PG_HOST_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gateway -d gateway"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  gateway:
+    build: .
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: gateway
+      PGPASSWORD: gateway
+      PGDATABASE: gateway
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+
+volumes:
+  pgdata:

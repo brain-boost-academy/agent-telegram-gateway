@@ -1,0 +1,36 @@
+{
+  "name": "agent-telegram-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Telegram gateway for agent-connector (protocol v1)",
+  "type": "module",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json && cp -r src/db/migrations dist/db/migrations",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "start": "node dist/main.js",
+    "dev": "node --env-file-if-exists=.env src/main.ts",
+    "admin": "node --env-file-if-exists=.env src/admin/main.ts",
+    "pretest": "node scripts/ensure-postgres.ts",
+    "test": "node --test --test-concurrency=1 'test/**/*.test.ts'",
+    "test:unit": "node --test 'test/unit/**/*.test.ts'"
+  },
+  "dependencies": {
+    "@brain-boost-academy/agent-protocol": "file:../agent-websocket-connector/packages/protocol",
+    "@grammyjs/auto-retry": "2.0.2",
+    "@grammyjs/transformer-throttler": "1.2.1",
+    "grammy": "1.46.0",
+    "https-proxy-agent": "9.1.0",
+    "postgres": "3.4.9",
+    "socks-proxy-agent": "10.1.0",
+    "ws": "8.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@types/ws": "^8.18.2",
+    "typescript": "~5.9.3"
+  }
+}
