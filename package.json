@@ -19,7 +19,7 @@
     "test:unit": "node --test 'test/unit/**/*.test.ts'"
   },
   "dependencies": {
-    "@brain-boost-academy/agent-protocol": "file:../agent-websocket-connector/packages/protocol",
+    "@brain-boost-academy/agent-protocol": "https://github.com/brain-boost-academy/agent-websocket-connector/releases/download/protocol-v1.2.0/brain-boost-academy-agent-protocol-1.2.0.tgz",
     "@grammyjs/auto-retry": "2.0.2",
     "@grammyjs/transformer-throttler": "1.2.1",
     "grammy": "1.46.0",

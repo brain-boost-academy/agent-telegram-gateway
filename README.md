@@ -87,15 +87,11 @@ Every test file starts with a `protects=…; fails_when=…; no_claim=…` card.
 
 ## Protocol dependency (D13)
 
-During development `package.json` points at the sibling checkout:
-`"@brain-boost-academy/agent-protocol": "file:../agent-websocket-connector/packages/protocol"`.
-The Dockerfile and CI assume the final state. Once `protocol-vX.Y.Z` is released (and the connector repo is public, R18),
-switch with one command and commit both files:
-
-```
-npm install https://github.com/brain-boost-academy/agent-websocket-connector/releases/download/protocol-v1.0.0/brain-boost-academy-agent-protocol-1.0.0.tgz
-```
-Until then `npm ci` in CI/Docker cannot resolve the `file:` path (it is outside the build context).
+`package.json` pins the protocol release tgz from the public connector repo:
+`https://github.com/brain-boost-academy/agent-websocket-connector/releases/download/protocol-v1.2.0/brain-boost-academy-agent-protocol-1.2.0.tgz`.
+To move to a new protocol version, run `npm install <new release URL>` and commit `package.json` and `package-lock.json`.
+For local work against an unreleased protocol, temporarily install the sibling checkout
+(`npm install ../agent-websocket-connector/packages/protocol`) and do not commit that change.
 
 ## CI
 
