@@ -37,6 +37,7 @@ src/admin/             CLI
 | `LOG_LEVEL` | info | debug / info / warn / error |
 | `GATEWAY_LABEL` | Telegram | shown to connectors in `welcome` |
 | `DISPLAY_TZ` | Europe/Moscow | time zone of times in `/sessions` (addition to the spec env list) |
+| `HIDE_COST` | false | hide `$cost` in the collapsed turn status (the agent reports an API-price estimate; meaningless on a Claude subscription) |
 
 Behind an ingress the client IP for logs / R19 is the right-most `X-Forwarded-For` entry.
 
@@ -54,6 +55,26 @@ In the image the same `npm run admin -- …` runs the compiled CLI (`node dist/a
 `kubectl exec deploy/gateway -- npm run admin -- connectors create af03` or
 `docker run --env-file … <image> npm run admin -- connectors create af03`.
 The CLI talks only to Postgres; the running gateway reacts to revoke/rotate/unpair via `NOTIFY gateway_admin`.
+
+## Bot commands (BotFather)
+
+The gateway registers its command menu itself on start (`setMyCommands` with `COMMANDS` from
+`src/telegram/texts.ts`); if that call fails it only logs `setMyCommands failed` and keeps running. To set the menu by
+hand (or after a failure): BotFather → `/setcommands` → pick the bot → paste:
+
+```
+start - привязать агента / приветствие
+new - новая сессия
+sessions - последние сессии
+stop - остановить ответ
+mode - режим разрешений
+agent - выбрать агента
+verbose - подробный вывод инструментов
+status - состояние агента
+unpair - отвязать агента
+help - справка
+```
+Keep this list in sync with `COMMANDS`: on the next start the gateway overwrites whatever was set in BotFather.
 
 ## Dev run
 
