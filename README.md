@@ -50,7 +50,9 @@ npm run admin -- connectors unpair <name>        # drops the pairing, kills unus
 npm run admin -- connectors rotate-token <name>  # new token, old one stops working, live socket closed (4401)
 npm run admin -- pairings find --tg <@username|id>
 ```
-In the image: `docker run --env-file … <image> node dist/admin/main.js connectors create af03`.
+In the image the same `npm run admin -- …` runs the compiled CLI (`node dist/admin/main.js`), e.g.
+`kubectl exec deploy/gateway -- npm run admin -- connectors create af03` or
+`docker run --env-file … <image> npm run admin -- connectors create af03`.
 The CLI talks only to Postgres; the running gateway reacts to revoke/rotate/unpair via `NOTIFY gateway_admin`.
 
 ## Dev run
