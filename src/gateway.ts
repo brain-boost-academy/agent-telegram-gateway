@@ -41,6 +41,7 @@ export type GatewayOpts = {
   asr?: AsrClient;
   displayTz: string;
   timings?: Partial<Timings>;
+  hideCost?: boolean;
 };
 
 type Pending =
@@ -96,6 +97,7 @@ export class Gateway {
     this.renderer = new Renderer({
       api: o.api,
       flushMs: this.timings.flushMs,
+      hideCost: o.hideCost,
       recordSession: (c, m, id, s) => this.recordSession(c, m, id, s),
     });
     this.interactions = new Interactions(this);

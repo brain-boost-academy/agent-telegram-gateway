@@ -1,6 +1,6 @@
 // protects=R14 sync reconcile (known turn keeps editing its messages, unknown turn is drawn anew), ≤1 flush/s,
-//   status collapse on turn.ended, turn.ended.text completes missed chunks, Telegram failure on the final flush surfaces to the caller;
-// fails_when=a known turn gets a second answer message after sync, an unknown turn is not drawn, edits exceed the interval,
+//   status collapse on turn.ended (cost omitted under HIDE_COST), turn.ended.text completes missed chunks, Telegram failure on the final flush surfaces to the caller;
+// fails_when=a known turn gets a second answer message after sync, cost still shown with hideCost, an unknown turn is not drawn, edits exceed the interval,
 //   missed chunks are not recovered, a failed final send is swallowed (would ack an undelivered turn.ended);
 // no_claim=real Telegram rate limits (grammY throttler/auto-retry not exercised here)
 import { mock, test } from "node:test";
@@ -50,9 +50,9 @@ async function advance(ms: number, step = 5): Promise<void> {
   }
 }
 
-function renderer(api: Api, flushMs = 50) {
+function renderer(api: Api, flushMs = 50, hideCost = false) {
   const recorded: number[] = [];
-  const r = new Renderer({ api, flushMs, recordSession: async (_c, m) => void recorded.push(m) });
+  const r = new Renderer({ api, flushMs, hideCost, recordSession: async (_c, m) => void recorded.push(m) });
   return { r, recorded };
 }
 
@@ -74,6 +74,17 @@ test("stream: status first, answer edited in place, collapse on turn.ended; ever
   assert.equal(last(statusId), "✓ 1 шаг · 40 с · $0.12");
   assert.equal(last(answerId), "Hel\n\nlo");
   assert.deepEqual(recorded.sort(), [statusId, answerId].sort());
+  r.stop();
+});
+
+test("hideCost: collapsed status has no cost, from turn.ended or usage_update", async () => {
+  const { api, calls } = fakeApi();
+  const { r } = renderer(api, 50, true);
+  await r.start("c", 7, { turn_id: "t1", conversation_ids: ["7"], session }, false);
+  r.update("c", 7, upd("t1", { sessionUpdate: "usage_update", used: 1, size: 2, cost: { amount: 1.32, currency: "USD" } }), false);
+  await r.end("c", 7, { turn_id: "t1", conversation_ids: ["7"], session, stop_reason: "end_turn", duration_ms: 40_000, tool_calls: 1, cost_usd: 0.12, text: "hi" }, false);
+  const statusId = calls.find((c) => c.m === "send")!.id!;
+  assert.equal(calls.filter((c) => c.id === statusId).at(-1)!.text, "✓ 1 шаг · 40 с");
   r.stop();
 });
 

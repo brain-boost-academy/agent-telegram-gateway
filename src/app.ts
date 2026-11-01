@@ -15,7 +15,7 @@ import { Media } from "./telegram/media.ts";
 import { COMMANDS } from "./telegram/texts.ts";
 import { WsServer } from "./ws/server.ts";
 
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";
 export const ADMIN_CHANNEL = "gateway_admin";
 
 /** Sent by the admin CLI through Postgres NOTIFY so the running gateway reacts immediately. */
@@ -74,6 +74,7 @@ export class App {
       asr: o.config.asrBaseUrl ? new AsrClient(o.config.asrBaseUrl, o.config.asrApiKey) : undefined,
       displayTz: o.config.displayTz,
       timings: o.timings,
+      hideCost: o.config.hideCost,
     });
     this.media = new Media(this.gw);
     installHandlers(this.bot, this.gw, this.media);

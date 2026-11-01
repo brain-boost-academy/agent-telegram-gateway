@@ -13,6 +13,8 @@ export type RenderDeps = {
   recordSession: (chatId: number, messageId: number, connectorId: string, session: SessionRef) => Promise<void>;
   /** Minimum pause between the end of one flush of a turn and the start of the next (≤ ~1 edit/s per chat). */
   flushMs?: number;
+  /** Omit the cost from the collapsed status (HIDE_COST). */
+  hideCost?: boolean;
 };
 
 type ToolView = { title: string; kind?: string; status?: string; msgId?: number; sent?: string };
@@ -204,7 +206,7 @@ export class Renderer {
   async end(connectorId: string, chatId: number, p: PayloadOf<"turn.ended">, verbose: boolean): Promise<void> {
     const v = this.#view(connectorId, chatId, p.turn_id, p.session, verbose, Date.now() - p.duration_ms);
     if (weight(p.text) > weight(v.text)) v.text = p.text;
-    v.final = finalStatusHtml({ steps: p.tool_calls, durationMs: p.duration_ms, costUsd: p.cost_usd ?? v.costUsd, stopReason: p.stop_reason });
+    v.final = finalStatusHtml({ steps: p.tool_calls, durationMs: p.duration_ms, costUsd: this.#d.hideCost ? undefined : (p.cost_usd ?? v.costUsd), stopReason: p.stop_reason });
     await this.#finish(v);
   }
 

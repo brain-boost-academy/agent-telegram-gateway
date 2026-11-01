@@ -1,5 +1,5 @@
 // protects=env parsing (defaults from the spec), TG_PROXY formats used by the other bots (http URL) plus socks, ASR URL convention, command parsing;
-// fails_when=WS_PORT/HTTP_HEALTH_PORT defaults change, a missing bot token is accepted, an http proxy URL is rejected,
+// fails_when=WS_PORT/HTTP_HEALTH_PORT defaults change, HIDE_COST is on by default or accepts garbage, a missing bot token is accepted, an http proxy URL is rejected,
 //   ASR base with or without /v1 builds a wrong URL, /cmd@otherbot is treated as ours;
 // no_claim=actual connectivity through a proxy
 import { test } from "node:test";
@@ -20,6 +20,17 @@ test("config defaults", () => {
   );
   assert.throws(() => loadConfig({}), /TELEGRAM_BOT_TOKEN/);
   assert.throws(() => loadConfig({ TELEGRAM_BOT_TOKEN: "t", WS_PORT: "x" }), /WS_PORT/);
+});
+
+test("HIDE_COST flag", () => {
+  const hide = (v?: string) => loadConfig({ TELEGRAM_BOT_TOKEN: "t", HIDE_COST: v }).hideCost;
+  assert.equal(hide(undefined), false);
+  assert.equal(hide(""), false);
+  assert.equal(hide("true"), true);
+  assert.equal(hide("1"), true);
+  assert.equal(hide(" ON "), true);
+  assert.equal(hide("off"), false);
+  assert.throws(() => hide("maybe"), /HIDE_COST/);
 });
 
 test("TG_PROXY: http URL (flux proxy-config) and socks", () => {

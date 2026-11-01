@@ -10,6 +10,8 @@ export type Config = {
   label: string;
   /** IANA zone for times shown in chat (session list). */
   displayTz: string;
+  /** Drop `$cost` from the collapsed turn status (it is an API-price estimate; meaningless on a subscription). */
+  hideCost: boolean;
 };
 
 function int(name: string, def: number, env: NodeJS.ProcessEnv): number {
@@ -18,6 +20,17 @@ function int(name: string, def: number, env: NodeJS.ProcessEnv): number {
   const n = Number(raw);
   if (!Number.isInteger(n) || n < 0 || n > 65535) throw new Error(`${name} must be a port number, got ${raw}`);
   return n;
+}
+
+const TRUE = new Set(["1", "true", "yes", "on"]);
+const FALSE = new Set(["0", "false", "no", "off"]);
+
+function bool(name: string, def: boolean, env: NodeJS.ProcessEnv): boolean {
+  const raw = env[name]?.trim().toLowerCase();
+  if (raw === undefined || raw === "") return def;
+  if (TRUE.has(raw)) return true;
+  if (FALSE.has(raw)) return false;
+  throw new Error(`${name} must be true/false, got ${env[name]}`);
 }
 
 function opt(v: string | undefined): string | undefined {
@@ -39,5 +52,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     logLevel: opt(env.LOG_LEVEL) ?? "info",
     label: opt(env.GATEWAY_LABEL) ?? "Telegram",
     displayTz: opt(env.DISPLAY_TZ) ?? "Europe/Moscow",
+    hideCost: bool("HIDE_COST", false, env),
   };
 }

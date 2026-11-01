@@ -187,6 +187,7 @@ export async function startGateway(
       logLevel: "silent",
       label: "Telegram",
       displayTz: "UTC",
+      hideCost: false,
     },
     sql: db.sql,
     botInfo: BOT_INFO,
