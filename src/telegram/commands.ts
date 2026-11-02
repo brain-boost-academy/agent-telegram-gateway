@@ -1,5 +1,6 @@
 import type { CallbackRow, SessionRef } from "../db/repo.ts";
-import type { Gateway } from "../gateway.ts";
+import type { ConnectorState, Gateway } from "../gateway.ts";
+import { log } from "../log.ts";
 import { TTL, type ButtonSpec } from "./buttons.ts";
 import type { Click } from "./interactions.ts";
 import { errorText, ownerLink, SLOW_REQUEST_MS } from "./inbound.ts";
@@ -22,6 +23,36 @@ export function sessionTime(iso: string | null | undefined, tz: string, now = ne
 function agentTitle(gw: Gateway, connectorId: string, agentId: string | undefined): string {
   const a = gw.state(connectorId).agents.find((x) => x.agent_id === agentId);
   return a?.title ?? agentId ?? "?";
+}
+
+type Modes = NonNullable<NonNullable<ConnectorState["conv"]>["modes"]>;
+
+const tick = (on: boolean, label: string) => `${on ? "✓ " : ""}${label}`;
+
+function agentRows(st: ConnectorState, current: string | undefined): ButtonSpec[][] {
+  return st.agents.map((a) => [{ label: tick(a.agent_id === current, a.title), kind: "agent", payload: { a: a.agent_id } }]);
+}
+
+function modeRows(modes: Modes): ButtonSpec[][] {
+  return modes.available.map((m) => [{ label: tick(m.id === modes.current, m.name), kind: "mode", payload: { m: m.id, n: m.name } }]);
+}
+
+/**
+ * After a successful pick: move the ✓ in the clicked menu itself. When that is not possible (no `rows`: the picked item
+ * is not in the current list; or the message is gone, Telegram refused) the user gets a text confirmation instead; a
+ * failure of that text is only logged — the pick did happen, so no error is shown.
+ */
+async function retick(gw: Gateway, q: Click, connectorId: string, rows: ButtonSpec[][] | undefined, fallbackHtml: string): Promise<void> {
+  if (rows) {
+    try {
+      const reply_markup = await gw.buttons.keyboard(connectorId, rows, TTL.menu);
+      await gw.api.editMessageReplyMarkup(q.chatId, q.messageId, { reply_markup });
+      return;
+    } catch (err) {
+      log.debug("menu edit failed, sending text", { err });
+    }
+  }
+  await sendHtml(gw.api, q.chatId, fallbackHtml).catch((err) => log.warn("menu pick confirmation failed", { err }));
 }
 
 /** Slash commands of a paired user. `/start` is handled before the owner gate. */
@@ -87,16 +118,14 @@ export async function runCommand(gw: Gateway, chatId: number, userId: number, cm
       case "mode": {
         const modes = gw.state(cid).conv?.modes;
         if (!modes?.available.length) return void (await say("Режимы недоступны: нет активной сессии."));
-        const rows = modes.available.map((m) => [{ label: `${m.id === modes.current ? "✓ " : ""}${m.name}`, kind: "mode", payload: { m: m.id, n: m.name } }]);
-        await say("Режим разрешений:", { reply_markup: await gw.buttons.keyboard(cid, rows, TTL.menu) });
+        await say("Режим разрешений:", { reply_markup: await gw.buttons.keyboard(cid, modeRows(modes), TTL.menu) });
         return;
       }
       case "agent": {
         const st = gw.state(cid);
         const current = st.conv?.agent_id ?? st.agents.find((a) => a.default)?.agent_id;
         if (!st.agents.length) return void (await say("Агент не сообщил список агентов."));
-        const rows = st.agents.map((a) => [{ label: `${a.agent_id === current ? "✓ " : ""}${a.title}`, kind: "agent", payload: { a: a.agent_id } }]);
-        await say("Выберите агента:", { reply_markup: await gw.buttons.keyboard(cid, rows, TTL.menu) });
+        await say("Выберите агента:", { reply_markup: await gw.buttons.keyboard(cid, agentRows(st, current), TTL.menu) });
         return;
       }
       default:
@@ -131,7 +160,9 @@ export async function onMenuClick(gw: Gateway, q: Click, row: CallbackRow): Prom
   if (!link) return q.answer(T.offline);
   const conversation_id = String(q.chatId);
   const say = (html: string) => sendHtml(gw.api, q.chatId, html);
-  await q.answer();
+  // attach is slow: stop the button spinner at once. mode/agent answer after the request with a toast.
+  const answered = row.kind === "attach";
+  if (answered) await q.answer();
   try {
     if (row.kind === "attach") {
       const { s } = row.payload as { s: SessionRef };
@@ -149,17 +180,26 @@ export async function onMenuClick(gw: Gateway, q: Click, row: CallbackRow): Prom
     if (row.kind === "mode") {
       const { m, n } = row.payload as { m: string; n: string };
       const r = await link.peer.request("session.set_mode", { conversation_id, mode_id: m });
+      // The connector does not send session.state after set_mode, so keep our copy current.
       const conv = gw.state(row.connector_id).conv;
       if (conv?.modes) conv.modes.current = r.mode_id;
-      await say(`Режим: <b>${escapeHtml(n)}</b>`);
+      await q.answer(`Режим: ${n}`);
+      const shown = conv?.modes?.available.some((x) => x.id === r.mode_id) ? modeRows(conv.modes) : undefined;
+      await retick(gw, q, row.connector_id, shown, `Режим: <b>${escapeHtml(n)}</b>`);
       return;
     }
     if (row.kind === "agent") {
       const { a } = row.payload as { a: string };
       const r = await link.peer.request("agent.select", { conversation_id, agent_id: a });
-      await say(`Агент: <b>${escapeHtml(agentTitle(gw, row.connector_id, r.agent_id))}</b>`);
+      // conv.agent_id is not written here: the connector follows agent.select with its own session.state.
+      const title = agentTitle(gw, row.connector_id, r.agent_id);
+      await q.answer(`Агент: ${title}`);
+      const st = gw.state(row.connector_id);
+      const shown = st.agents.some((x) => x.agent_id === r.agent_id) ? agentRows(st, r.agent_id) : undefined;
+      await retick(gw, q, row.connector_id, shown, `Агент: <b>${escapeHtml(title)}</b>`);
     }
   } catch (err) {
+    if (!answered) await q.answer();
     await say(errorText(err));
   }
 }

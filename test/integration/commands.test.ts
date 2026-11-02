@@ -1,7 +1,9 @@
 // protects=Flow 7/8 commands: /sessions buttons (title, time, agent, busy badge) → session.attach → preview (+ active_elsewhere warning)
 //   and the preview is reply-able into that session; /mode from session.state.modes; /agent from hello.agents; /stop, /new, /verbose, /status;
+//   a /mode or /agent pick moves the ✓ in the same menu message (+ toast), a text confirmation when the menu cannot be redrawn;
 // fails_when=wrong request payloads (conversation_id), buttons without the session ref, preview not recorded in message_sessions,
-//   mode buttons not from the latest session.state, verbose setting not persisted;
+//   mode buttons not from the latest session.state, verbose setting not persisted, ✓ left on the old item or a new message
+//   per pick, no confirmation when the edit fails, an error shown for a pick that succeeded, ✓ moved after a failed request;
 // no_claim=connector-side behaviour of these requests (session/load etc.)
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
@@ -14,6 +16,14 @@ let h: Harness;
 let c: FakeConnector;
 const chat = String(OWNER.id);
 const other = { agent_id: "opencode", session_id: "oc-7", cwd: "/home/u/work/vault" };
+type Kb = { inline_keyboard: Array<Array<{ text: string }>> };
+const conv = () => h.app.gw.state(h.app.gw.registry.all()[0]!.connectorId).conv;
+const edits = () => h.tg.of("editMessageReplyMarkup", OWNER.id);
+const lastEdit = () => {
+  const e = edits().at(-1)!;
+  return { messageId: e.payload.message_id, labels: (e.payload.reply_markup as Kb).inline_keyboard.flat().map((b) => b.text) };
+};
+const lastToast = () => h.tg.of("answerCallbackQuery").at(-1)?.payload.text;
 
 before(async () => {
   db = await freshDb();
@@ -67,21 +77,30 @@ test("/mode uses the latest session.state modes; click → session.set_mode", as
     busy: false,
     queue_length: 0,
   });
-  await until(() => h.app.gw.state(h.app.gw.registry.all()[0]!.connectorId).conv, "state stored");
+  await until(conv, "state stored");
   await h.feed(textUpdate(OWNER, "/mode"));
   const btns = h.tg.buttons(/Режим разрешений/);
   assert.deepEqual(btns.map((b) => b.text), ["✓ Manual", "Accept edits"]);
-  await h.feed(callbackUpdate(OWNER, btns[1]!.data));
+  const menuId = h.tg.messageId(/Режим разрешений/);
+  const sent = h.tg.texts(OWNER.id).length;
+  await h.feed(callbackUpdate(OWNER, btns[1]!.data, menuId));
   assert.deepEqual((await c.waitFor("session.set_mode")).payload, { conversation_id: chat, mode_id: "acceptEdits" });
-  assert.equal(h.tg.texts(OWNER.id).at(-1), "Режим: <b>Accept edits</b>");
+  assert.deepEqual(lastEdit(), { messageId: menuId, labels: ["Manual", "✓ Accept edits"] });
+  assert.equal(h.tg.texts(OWNER.id).length, sent, "no separate «Режим: …» message");
+  assert.equal(lastToast(), "Режим: Accept edits");
 });
 
 test("/agent buttons from hello.agents; /new; /stop; /verbose; /status", async () => {
   await h.feed(textUpdate(OWNER, "/agent"));
   const btns = h.tg.buttons(/Выберите агента/);
   assert.deepEqual(btns.map((b) => b.text), ["✓ Claude Code", "opencode"]);
-  await h.feed(callbackUpdate(OWNER, btns[1]!.data));
+  const menuId = h.tg.messageId(/Выберите агента/);
+  const sent = h.tg.texts(OWNER.id).length;
+  await h.feed(callbackUpdate(OWNER, btns[1]!.data, menuId));
   assert.deepEqual((await c.waitFor("agent.select")).payload, { conversation_id: chat, agent_id: "opencode" });
+  assert.deepEqual(lastEdit(), { messageId: menuId, labels: ["Claude Code", "✓ opencode"] });
+  assert.equal(h.tg.texts(OWNER.id).length, sent, "no separate «Агент: …» message");
+  assert.equal(lastToast(), "Агент: opencode");
 
   await h.feed(textUpdate(OWNER, "/new"));
   assert.deepEqual((await c.waitFor("session.new")).payload, { conversation_id: chat });
@@ -101,11 +120,87 @@ test("/agent buttons from hello.agents; /new; /stop; /verbose; /status", async (
   assert.match(st, /Агент: <b>af50<\/b> — в сети/);
   assert.match(st, /Режим: Accept edits/);
   assert.match(st, /Подробный вывод: выкл/);
+
+  // The connector follows agent.select with session.state; the next /agent shows the new ✓ from it.
+  c.send("session.state", { conversation_id: chat, session: null, agent_id: "opencode", busy: false, queue_length: 0 });
+  await until(() => conv()?.agent_id === "opencode", "agent switched");
+  await h.feed(textUpdate(OWNER, "/agent"));
+  assert.deepEqual(h.tg.buttons(/Выберите агента/).map((b) => b.text), ["Claude Code", "✓ opencode"]);
+});
+
+test("a pick that cannot be shown in the menu is confirmed with text, never with an error", async () => {
+  const agentMenu = h.tg.messageId(/Выберите агента/);
+  const claude = h.tg.buttons(/Выберите агента/)[0]!.data;
+
+  // The menu message is gone → text confirmation.
+  h.tg.failNext("editMessageReplyMarkup", 1, 400, "Bad Request: message to edit not found");
+  await h.feed(callbackUpdate(OWNER, claude, agentMenu));
+  assert.equal(h.tg.texts(OWNER.id).at(-1), "Агент: <b>Claude Code</b>");
+
+  // Both the edit and the confirmation fail → only logged, no «⚠️».
+  let sent = h.tg.texts(OWNER.id).length;
+  h.tg.failNext("editMessageReplyMarkup", 1, 429, "Too Many Requests: retry after 5");
+  h.tg.failNext("sendMessage", 1, 429, "Too Many Requests: retry after 5");
+  await h.feed(callbackUpdate(OWNER, claude, agentMenu));
+  assert.deepEqual(h.tg.texts(OWNER.id).slice(sent), ["Агент: <b>Claude Code</b>"]);
+
+  // An old /mode menu after the session was unbound (no modes in the state) → text, the menu is not touched.
+  const modeMenu = h.tg.messageId(/Режим разрешений/);
+  const [manual, acceptEdits] = h.tg.buttons(/Режим разрешений/);
+  assert.equal(conv()?.modes ?? undefined, undefined);
+  let edited = edits().length;
+  await h.feed(callbackUpdate(OWNER, manual!.data, modeMenu));
+  assert.equal(h.tg.texts(OWNER.id).at(-1), "Режим: <b>Manual</b>");
+  assert.equal(edits().length, edited);
+
+  // The picked mode is no longer in the list → text, the menu is not touched.
+  c.send("session.state", {
+    conversation_id: chat,
+    session: SESSION,
+    agent_id: "claude",
+    modes: { current: "default", available: [{ id: "default", name: "Manual" }] },
+    busy: false,
+    queue_length: 0,
+  });
+  await until(() => conv()?.modes?.available.length === 1, "modes without acceptEdits");
+  sent = h.tg.texts(OWNER.id).length;
+  edited = edits().length;
+  await h.feed(callbackUpdate(OWNER, acceptEdits!.data, modeMenu));
+  assert.deepEqual(h.tg.texts(OWNER.id).slice(sent), ["Режим: <b>Accept edits</b>"]);
+  assert.equal(edits().length, edited);
+
+  // A name that itself starts with «✓ » is not the picked item: still text, the menu is not touched.
+  const state = (available: Array<{ id: string; name: string }>) =>
+    c.send("session.state", { conversation_id: chat, session: SESSION, agent_id: "claude", modes: { current: "default", available }, busy: false, queue_length: 0 });
+  state([{ id: "default", name: "✓ Manual" }, { id: "plan", name: "Plan" }]);
+  await until(() => conv()?.modes?.available.length === 2, "modes with plan");
+  await h.feed(textUpdate(OWNER, "/mode"));
+  const planMenu = h.tg.messageId(/Режим разрешений/);
+  const plan = h.tg.buttons(/Режим разрешений/)[1]!.data;
+  state([{ id: "default", name: "✓ Manual" }]);
+  await until(() => conv()?.modes?.available.length === 1, "plan removed");
+  sent = h.tg.texts(OWNER.id).length;
+  edited = edits().length;
+  await h.feed(callbackUpdate(OWNER, plan, planMenu));
+  assert.deepEqual(h.tg.texts(OWNER.id).slice(sent), ["Режим: <b>Plan</b>"]);
+  assert.equal(edits().length, edited);
 });
 
 test("request errors from the connector are shown", async () => {
   const { ProtocolError } = await import("@brain-boost-academy/agent-protocol");
+  const prev = { new: c.handlers["session.new"], select: c.handlers["agent.select"] };
   c.handlers["session.new"] = () => new ProtocolError("agent_unavailable", "claude crashed");
   await h.feed(textUpdate(OWNER, "/new"));
   assert.equal(h.tg.texts(OWNER.id).at(-1), "⚠️ Агент недоступен.");
+
+  // A failed pick shows the error and leaves the ✓ where it was.
+  c.handlers["agent.select"] = () => new ProtocolError("agent_unavailable", "opencode crashed");
+  await h.feed(textUpdate(OWNER, "/agent"));
+  const edited = edits().length;
+  await h.feed(callbackUpdate(OWNER, h.tg.buttons(/Выберите агента/)[1]!.data, h.tg.messageId(/Выберите агента/)));
+  assert.equal(h.tg.texts(OWNER.id).at(-1), "⚠️ Агент недоступен.");
+  assert.equal(edits().length, edited);
+  assert.equal(lastToast(), undefined);
+  c.handlers["session.new"] = prev.new;
+  c.handlers["agent.select"] = prev.select;
 });
