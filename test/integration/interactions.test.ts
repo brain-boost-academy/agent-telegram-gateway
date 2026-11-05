@@ -212,3 +212,34 @@ test("re-rendering a form (multi-select toggles) does not insert new callback ro
   const r = await c.waitFor("elicitation.respond", (p: { request_id: string }) => p.request_id === "e9");
   assert.deepEqual((r.payload as { content: unknown }).content, { q: ["a", "b"] }, "b toggled 3 times stays selected");
 });
+
+test("text after a question answered mid-turn is a new message below the form; the status moves below it too", async () => {
+  const upd = (update: Record<string, unknown>) =>
+    c.send("session.update", { conversation_ids: [chat], session: SESSION, turn_id: "tq", update: update as { sessionUpdate: string } });
+  c.send("turn.started", { turn_id: "tq", conversation_ids: [chat], session: SESSION, origin: "text" });
+  upd({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Вот файл задачи." } });
+  await until(() => h.tg.texts(OWNER.id).includes("Вот файл задачи."), "answer before the question");
+  const statusAbove = h.tg.messageId(/Работаю/);
+  c.send("elicitation.request", elicitation("eq"));
+  await c.waitFor("delivered", (p: { id: string }) => p.id === "req:eq");
+  const form = h.tg.messageId(/Какой цвет/);
+  await h.feed(callbackUpdate(OWNER, h.tg.buttons(/Какой цвет/)[1]!.data, form));
+  await c.waitFor("elicitation.respond", (p: { request_id: string }) => p.request_id === "eq");
+  upd({ sessionUpdate: "tool_call", toolCallId: "w", title: "Write task", kind: "edit", status: "pending" });
+  upd({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Создал задачу." } });
+  c.send("turn.ended", { turn_id: "tq", conversation_ids: [chat], session: SESSION, stop_reason: "end_turn", duration_ms: 40_000, tool_calls: 2, cost_usd: 0.12, text: "Вот файл задачи.Создал задачу." });
+  await c.waitFor("delivered", (p: { id: string }) => p.id === "turn:tq");
+
+  const below = h.tg.of("sendMessage", OWNER.id).filter((x) => x.messageId! > form);
+  const lastOf = (id: number) =>
+    String([...h.tg.calls].reverse().find((x) => (x.method === "editMessageText" && x.payload.message_id === id) || x.messageId === id)!.payload.text);
+  assert.equal(below.length, 2, "status + new text are sent below the form");
+  assert.equal(lastOf(below[0]!.messageId!), "✓ 2 шага · 40 с · $0.12");
+  assert.equal(lastOf(below[1]!.messageId!), "Создал задачу.");
+  assert.equal(h.tg.of("deleteMessage", OWNER.id).at(-1)?.payload.message_id, statusAbove, "the status above the form is removed");
+  const answerAbove = h.tg.messageId(/^Вот файл задачи\.$/);
+  assert.ok(
+    h.tg.of("editMessageText", OWNER.id).every((x) => x.payload.message_id !== answerAbove),
+    "the answer above the form keeps its text",
+  );
+});

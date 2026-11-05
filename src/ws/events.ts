@@ -273,7 +273,7 @@ export class ConnectorEvents implements LinkHandler {
         let html = markdownToHtml(p.text);
         if (p.switched) html += "\n\n<i>↪️ чат переключён на эту сессию — ответы пойдут в неё</i>";
         for (const part of splitHtml(html).slice(done.parts)) {
-          const m = await sendHtml(this.#gw.api, chat, part);
+          const m = await this.#gw.renderer.below(chat, () => sendHtml(this.#gw.api, chat, part));
           done.parts++;
           await record(m.message_id);
         }
@@ -286,7 +286,7 @@ export class ConnectorEvents implements LinkHandler {
           skip.set(id, left - 1);
           continue;
         }
-        const m = await this.#gw.api.sendDocument(chat, new InputFile(blob!.path, blob!.name));
+        const m = await this.#gw.renderer.below(chat, () => this.#gw.api.sendDocument(chat, new InputFile(blob!.path, blob!.name)));
         done.files.set(id, (done.files.get(id) ?? 0) + 1);
         await record(m.message_id);
       }

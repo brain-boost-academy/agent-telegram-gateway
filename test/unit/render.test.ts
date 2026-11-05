@@ -1,7 +1,8 @@
 // protects=R14 sync reconcile (known turn keeps editing its messages, unknown turn is drawn anew), ≤1 flush/s,
 //   status collapse on turn.ended (cost omitted under HIDE_COST), turn.ended.text completes missed chunks, Telegram failure on the final flush surfaces to the caller;
+//   our own message mid-turn (question, permission, notify): text before it drawn above it, later status and text below it;
 // fails_when=a known turn gets a second answer message after sync, cost still shown with hideCost, an unknown turn is not drawn, edits exceed the interval,
-//   missed chunks are not recovered, a failed final send is swallowed (would ack an undelivered turn.ended);
+//   missed chunks are not recovered, text after a question edits a message above it, a question with nothing new after it (or only the minute ticked over) moves the status, text arriving while our message is sent is edited above it, a failed final send is swallowed (would ack an undelivered turn.ended);
 // no_claim=real Telegram rate limits (grammY throttler/auto-retry not exercised here)
 import { mock, test } from "node:test";
 import assert from "node:assert/strict";
@@ -32,6 +33,10 @@ function fakeApi(latencyMs = 0) {
       const call: Call = { m: "edit", chat, id, text, at: Date.now() };
       calls.push(call);
       await wait(call);
+      return true;
+    },
+    async deleteMessage(chat: number, id: number) {
+      calls.push({ m: "delete", chat, id, text: "", at: Date.now() });
       return true;
     },
   };
@@ -216,5 +221,82 @@ test("status shows the tool title from tool_call_update (claude-agent-acp sends 
   await sleep(120);
   const statusId = calls.find((c) => c.m === "send")!.id!;
   assert.match(calls.filter((c) => c.id === statusId).at(-1)!.text, /touch e2e\.txt/);
+  r.stop();
+});
+
+test("a message of ours mid-turn: pending text is drawn above it; later status and text go below it, the old status is deleted", async () => {
+  const { api, calls } = fakeApi();
+  const { r } = renderer(api, 10_000); // long interval: nothing would be flushed before the question on its own
+  await r.start("c", 7, { turn_id: "t1", conversation_ids: ["7"], session }, false);
+  r.update("c", 7, upd("t1", chunk("Вот файл задачи.")), false);
+  const statusId = calls[0]!.id!;
+  const ask = (text: string) => r.below(7, () => api.sendMessage(7, text));
+  const form = await ask("❓ Создать задачу?");
+  assert.deepEqual(calls.filter((c) => c.m === "send").map((c) => c.text.replace(/ · .*/, "")), ["⚙️ <b>Работаю</b>", "Вот файл задачи.", "❓ Создать задачу?"]);
+  // nothing new yet: a second message of ours (the «write your answer» prompt) does not move anything
+  await ask("✍️ Напишите ответ");
+  r.update("c", 7, upd("t1", { sessionUpdate: "tool_call", toolCallId: "w", title: "Write", kind: "edit" }), false);
+  r.update("c", 7, upd("t1", chunk("Создал задачу.")), false);
+  await r.end("c", 7, { turn_id: "t1", conversation_ids: ["7"], session, stop_reason: "end_turn", duration_ms: 40_000, tool_calls: 1, text: "Вот файл задачи.Создал задачу." }, false);
+  const below = calls.filter((c) => c.m === "send" && c.id! > form.message_id);
+  assert.deepEqual(below.map((c) => c.text), ["✍️ Напишите ответ", "✓ 1 шаг · 40 с", "Создал задачу."]);
+  assert.deepEqual(calls.filter((c) => c.m === "delete").map((c) => c.id), [statusId]);
+  assert.equal(calls.filter((c) => c.m === "send" && /Работаю|✓/.test(c.text)).length, 2, "the status moved once");
+  assert.ok(calls.every((c) => c.m !== "edit" || c.id !== calls[1]!.id), "text above the question is never rewritten");
+  r.stop();
+});
+
+test("two questions in one turn: each part of the answer stays between its questions", async () => {
+  const { api, calls } = fakeApi();
+  const { r } = renderer(api, 10);
+  await r.start("c", 7, { turn_id: "t1", conversation_ids: ["7"], session }, false);
+  for (const [i, t] of ["Первый.", "Второй.", "Третий."].entries()) {
+    r.update("c", 7, upd("t1", { sessionUpdate: "tool_call", toolCallId: `q${i}`, title: "Ask", kind: "other" }), false);
+    r.update("c", 7, upd("t1", chunk(t)), false);
+    if (i < 2) await r.below(7, () => api.sendMessage(7, `❓ ${i + 1}`));
+  }
+  await r.end("c", 7, { turn_id: "t1", conversation_ids: ["7"], session, stop_reason: "end_turn", duration_ms: 1000, tool_calls: 3, text: "Первый.\n\nВторой.\n\nТретий." }, false);
+  const last = (id: number) => calls.filter((c) => c.id === id).at(-1)!.text;
+  const answers = calls.filter((c) => c.m === "send" && !/Работаю|❓|✓/.test(c.text));
+  assert.deepEqual(answers.map((c) => last(c.id!)), ["Первый.", "Второй.", "Третий."]);
+  const order = calls.filter((c) => c.m === "send").map((c) => c.text.replace(/<[^>]+>/g, "").split(" ")[0]);
+  assert.deepEqual(order.filter((x) => !/⚙️|✓/.test(x!)), ["Первый.", "❓", "Второй.", "❓", "Третий."]);
+  r.stop();
+});
+
+test("a message of ours after the minute ticks over, with nothing new in the turn, does not move the status", async () => {
+  const real = Date.now.bind(Date);
+  let skew = 0;
+  const now = mock.method(Date, "now", () => real() + skew);
+  try {
+    const { api, calls } = fakeApi();
+    const { r } = renderer(api, 10_000);
+    await r.start("c", 7, { turn_id: "t1", conversation_ids: ["7"], session }, false);
+    r.update("c", 7, upd("t1", chunk("Вот файл задачи.")), false);
+    await r.below(7, () => api.sendMessage(7, "❓ Создать задачу?"));
+    skew = 61_000; // the user thinks for over a minute, then asks to type an answer
+    await r.below(7, () => api.sendMessage(7, "✍️ Напишите ответ"));
+    assert.deepEqual(calls.filter((c) => c.m === "delete"), [], "the status stays where it was");
+    assert.deepEqual(calls.filter((c) => c.m === "send").map((c) => c.text.replace(/ · .*/, "")), ["⚙️ <b>Работаю</b>", "Вот файл задачи.", "❓ Создать задачу?", "✍️ Напишите ответ"]);
+    r.stop();
+  } finally {
+    now.mock.restore();
+  }
+});
+
+test("text that arrives while our message is being sent goes below it, not into the answer above", async () => {
+  const { api, calls } = fakeApi();
+  const { r } = renderer(api, 10_000);
+  await r.start("c", 7, { turn_id: "t1", conversation_ids: ["7"], session }, false);
+  r.update("c", 7, upd("t1", chunk("До.")), false);
+  const prompt = await r.below(7, async () => {
+    r.update("c", 7, upd("t1", chunk(" Во время.")), false);
+    return api.sendMessage(7, "✍️ Напишите ответ");
+  });
+  await r.end("c", 7, { turn_id: "t1", conversation_ids: ["7"], session, stop_reason: "end_turn", duration_ms: 1000, tool_calls: 0, text: "До. Во время." }, false);
+  const above = calls.find((c) => c.m === "send" && c.text === "До.")!;
+  assert.ok(calls.every((c) => c.m !== "edit" || c.id !== above.id), "the answer above the prompt keeps its text");
+  const below = calls.filter((c) => c.m === "send" && c.id! > prompt.message_id).map((c) => c.text);
+  assert.deepEqual(below, ["✓ 0 шагов · 1 с", "Во время."]);
   r.stop();
 });

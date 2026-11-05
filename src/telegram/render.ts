@@ -29,8 +29,17 @@ class TurnView {
   verbose: boolean;
   text = "";
   gap = false;
+  /** Answer messages of the current segment (the text from `segFrom` on). */
   answerIds: number[] = [];
   answerSent: string[] = [];
+  /** Visible length of the text drawn in messages above a cut; the current segment starts there. */
+  segFrom = 0;
+  /** A message landed in the chat below this turn (question, permission, notify): visible length of the text and the status then. */
+  cutAt?: number;
+  cutStatus?: string;
+  /** What the last flush put on screen: visible length of the text and the status without the elapsed time (see `statusOf`). */
+  drawnWeight = 0;
+  drawnStatus?: string;
   statusId?: number;
   statusSent?: string;
   toolIds = new Set<string>();
@@ -70,6 +79,28 @@ class TurnView {
 /** Visible-content length, used to decide whether the connector's text is more complete than ours. */
 function weight(s: string): number {
   return s.replace(/\s+/g, "").length;
+}
+
+/** The part of `s` from its `from`-th to its `to`-th visible character (whitespace is not counted, see `weight`). */
+function sliceWeight(s: string, from: number, to = Infinity): string {
+  if (to <= from) return "";
+  let w = 0;
+  let start = from > 0 ? s.length : 0;
+  let end = s.length;
+  for (let i = 0; i < s.length; i++) {
+    if (/\s/.test(s[i]!)) continue;
+    if (from > 0 && w === from) start = i;
+    if (++w === to) {
+      end = i + 1;
+      break;
+    }
+  }
+  return s.slice(start, end);
+}
+
+/** The status line of a turn; the cut compares it with `elapsedMs` 0, so the minute ticking over is not news. */
+function statusOf(v: TurnView, elapsedMs: number): string {
+  return v.final ?? liveStatusHtml({ steps: v.steps, currentTool: v.currentTool, plan: v.plan, elapsedMs });
 }
 
 function textOf(update: Obj): string | undefined {
@@ -232,6 +263,28 @@ export class Renderer {
     }
   }
 
+  /**
+   * Send a message of our own (question, permission, notify) into a chat where turns may be rendering. What the turns have
+   * so far is drawn above it first; once a turn has something new, its status and further text go to new messages below it,
+   * not into edits of messages the user has scrolled past (no notification, easy to miss).
+   */
+  async below<T>(chatId: number, send: () => Promise<T>): Promise<T> {
+    const views = [...this.#views.values()].filter((v) => v.chatId === chatId && !v.done);
+    for (const v of views) {
+      clearTimeout(v.timer);
+      v.timer = undefined;
+      await this.#enqueueFlush(v).catch((err) => log.warn("render flush failed", { turn: v.turnId, err }));
+    }
+    const r = await send();
+    for (const v of views) {
+      if (v.done || v.statusId === undefined) continue;
+      // what was on screen when the message went out, not what arrived while it was being sent (that goes below it)
+      v.cutAt = v.drawnWeight;
+      v.cutStatus = v.drawnStatus;
+    }
+    return r;
+  }
+
   async #finish(v: TurnView): Promise<void> {
     clearTimeout(v.timer);
     v.timer = undefined;
@@ -283,14 +336,27 @@ export class Renderer {
   /** Bring Telegram in line with the view: status, verbose tool messages, answer parts. Idempotent. */
   async #flush(v: TurnView): Promise<void> {
     const { api } = this.#d;
-    const status =
-      v.final ?? liveStatusHtml({ steps: v.steps, currentTool: v.currentTool, plan: v.plan, elapsedMs: Date.now() - v.startedAt });
+    const status = statusOf(v, Date.now() - v.startedAt);
+    const statusKey = statusOf(v, 0);
+    if (v.cutAt !== undefined && (weight(v.text) > v.cutAt || statusKey !== v.cutStatus)) {
+      // something new since a message landed below us: finish the text above it, then continue below it
+      const cutAt = v.cutAt;
+      await this.#drawAnswer(v, sliceWeight(v.text, v.segFrom, cutAt));
+      v.cutAt = undefined;
+      v.segFrom = cutAt;
+      v.answerIds = [];
+      v.answerSent = [];
+      if (v.statusId !== undefined) await api.deleteMessage(v.chatId, v.statusId).catch((err) => log.debug("old status not deleted", { err }));
+      v.statusId = undefined;
+      v.statusSent = undefined;
+    }
     if (v.statusId === undefined || (v.statusSent !== status && (await editHtml(api, v.chatId, v.statusId, status)) === "gone")) {
       const m = await sendHtml(api, v.chatId, status);
       v.statusId = m.message_id;
       await this.#record(v, m.message_id);
     }
     v.statusSent = status;
+    v.drawnStatus = statusKey;
 
     for (const tv of v.tools.values()) {
       const html = toolCallHtml(tv.title, tv.status, tv.kind);
@@ -303,7 +369,14 @@ export class Renderer {
       tv.sent = html;
     }
 
-    const parts = v.text.trim() ? splitHtml(markdownToHtml(v.text)) : [];
+    const drawn = weight(v.text);
+    await this.#drawAnswer(v, sliceWeight(v.text, v.segFrom));
+    v.drawnWeight = drawn;
+  }
+
+  async #drawAnswer(v: TurnView, text: string): Promise<void> {
+    const { api } = this.#d;
+    const parts = text.trim() ? splitHtml(markdownToHtml(text)) : [];
     for (const [i, part] of parts.entries()) {
       const id = v.answerIds[i];
       if (id !== undefined && v.answerSent[i] === part) continue;

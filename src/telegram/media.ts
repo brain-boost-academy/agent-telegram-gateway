@@ -64,7 +64,9 @@ export class Media {
   async voice(chatId: number, userId: number, m: Message): Promise<void> {
     const f = audioOf(m)!;
     const say = (html: string, replyTo?: number) =>
-      sendHtml(this.#gw.api, chatId, html, replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {});
+      this.#gw.renderer.below(chatId, () =>
+        sendHtml(this.#gw.api, chatId, html, replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {}),
+      );
     const o = await ownerLink(this.#gw, chatId, userId);
     if (!o) return;
     if (!this.#gw.asr) return void (await say(T.asrOff));

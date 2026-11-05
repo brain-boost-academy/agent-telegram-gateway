@@ -1,5 +1,5 @@
 // protects=Flow 2 text → conversation.prompt (conversation_id = chat id) → streamed answer + live status collapsing to «✓ N шагов · …»,
-//   queue position, reply → session of that message, offline connector message, R2/R9 durable delivery (dedupe + ack only after Telegram success);
+//   queue position (a queued reply mid-turn: the rest of the turn goes below it), reply → session of that message, offline connector message, R2/R9 durable delivery (dedupe + ack only after Telegram success);
 // fails_when=prompt goes to the wrong conversation, answer is not edited in place, status not collapsed, duplicate turn.ended renders twice,
 //   a Telegram failure is acked or recorded in `delivered`, notify for an unpaired connector is not rejected with not_paired;
 // no_claim=Telegram rate limiting, real agent output
@@ -139,4 +139,22 @@ test("durable message while unpaired → error not_paired, nothing recorded", as
   assert.equal((err.payload as { code: string }).code, "not_paired");
   assert.equal(await db.repo.isDelivered(k.id, "notify:n9"), false);
   await c2.close();
+});
+
+test("a prompt queued mid-turn: «в очереди» goes below the turn, the rest of the answer and the status go below it", async () => {
+  c.send("turn.started", { turn_id: "tqq", conversation_ids: [chat], session: SESSION, origin: "text" });
+  upd("tqq", { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Начало ответа." } });
+  await until(() => h.tg.texts(OWNER.id).includes("Начало ответа."), "answer before the follow-up");
+  const answerAbove = h.tg.messageId(/^Начало ответа\.$/);
+  c.handlers["conversation.prompt"] = () => ({ session: SESSION, queued_position: 1 });
+  await h.feed(textUpdate(OWNER, "и ещё вопрос"));
+  await until(() => h.tg.texts(OWNER.id).at(-1) === "⏳ в очереди: 1", "queue position");
+  c.handlers["conversation.prompt"] = () => ({ session: SESSION, queued_position: 0 });
+  const queued = h.tg.messageId(/в очереди: 1/);
+  upd("tqq", { sessionUpdate: "agent_message_chunk", content: { type: "text", text: " Конец ответа." } });
+  c.send("turn.ended", ended("tqq", "Начало ответа. Конец ответа."));
+  await c.waitFor("delivered", (p: { id: string }) => p.id === "turn:tqq");
+  const below = h.tg.of("sendMessage", OWNER.id).filter((x) => x.messageId! > queued);
+  assert.deepEqual(below.map((x) => lastEdit(x.messageId!)), ["✓ 2 шага · 40 с · $0.12", "Конец ответа."]);
+  assert.ok(h.tg.of("editMessageText", OWNER.id).every((x) => x.payload.message_id !== answerAbove), "the answer above keeps its text");
 });

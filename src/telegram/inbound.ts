@@ -79,9 +79,10 @@ export async function sendPrompt(
       },
       { timeoutMs: SLOW_REQUEST_MS },
     );
-    if (acc.waiting_foreign) await sendHtml(gw.api, chatId, T.waitingForeign);
-    else if (acc.queued_position > 0) await sendHtml(gw.api, chatId, T.queued(acc.queued_position));
+    // a turn may be running in this chat (that is why the prompt is queued): its further output goes below this reply
+    if (acc.waiting_foreign) await gw.renderer.below(chatId, () => sendHtml(gw.api, chatId, T.waitingForeign));
+    else if (acc.queued_position > 0) await gw.renderer.below(chatId, () => sendHtml(gw.api, chatId, T.queued(acc.queued_position)));
   } catch (err) {
-    await sendHtml(gw.api, chatId, errorText(err));
+    await gw.renderer.below(chatId, () => sendHtml(gw.api, chatId, errorText(err)));
   }
 }

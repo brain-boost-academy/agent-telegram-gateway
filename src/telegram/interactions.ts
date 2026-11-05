@@ -85,7 +85,7 @@ export class Interactions {
       row.map((o) => ({ label: optionLabel(o), kind: "perm", payload: { r: p.request_id, o: o.optionId } })),
     );
     const markup = await this.#gw.buttons.keyboard(connectorId, rows, TTL.request, { stable: true });
-    const m = await sendHtml(this.#gw.api, chatId, permissionHtml(params), { reply_markup: markup });
+    const m = await this.#gw.renderer.below(chatId, () => sendHtml(this.#gw.api, chatId, permissionHtml(params), { reply_markup: markup }));
     this.#perms.set(this.#key(connectorId, p.request_id), {
       connectorId,
       requestId: p.request_id,
@@ -142,7 +142,8 @@ export class Interactions {
   async showElicitation(connectorId: string, chatId: number, p: PayloadOf<"elicitation.request">): Promise<void> {
     const form = new Form(p.params as Record<string, unknown>);
     const fv: FormView = { connectorId, requestId: p.request_id, chatId, messageId: 0, form, session: p.session };
-    const m = await sendHtml(this.#gw.api, chatId, form.html(), { reply_markup: await this.#keyboard(fv) });
+    const markup = await this.#keyboard(fv);
+    const m = await this.#gw.renderer.below(chatId, () => sendHtml(this.#gw.api, chatId, form.html(), { reply_markup: markup }));
     fv.messageId = m.message_id;
     this.#forms.set(this.#key(connectorId, p.request_id), fv);
     await this.#gw.recordSession(chatId, m.message_id, connectorId, p.session).catch(() => {});
@@ -229,7 +230,8 @@ export class Interactions {
     const prev = this.#gw.arming.arm(fv.chatId, { armId, connectorId: fv.connectorId, requestId: fv.requestId, fieldKey: field.key });
     if (prev?.promptMessageId) await this.#gw.api.editMessageReplyMarkup(fv.chatId, prev.promptMessageId).catch(() => {});
     const markup = await this.#gw.buttons.keyboard(fv.connectorId, [[{ label: "Отмена", kind: "disarm", payload: { armId } }]], TTL.menu);
-    const m = await sendHtml(this.#gw.api, fv.chatId, `${T.armPrompt}\n<i>${escapeHtml(truncate(field.title, 300))}</i>`, { reply_markup: markup });
+    const html = `${T.armPrompt}\n<i>${escapeHtml(truncate(field.title, 300))}</i>`;
+    const m = await this.#gw.renderer.below(fv.chatId, () => sendHtml(this.#gw.api, fv.chatId, html, { reply_markup: markup }));
     const cur = this.#gw.arming.get(fv.chatId);
     if (cur?.armId === armId) cur.promptMessageId = m.message_id;
   }
