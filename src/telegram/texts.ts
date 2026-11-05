@@ -26,6 +26,14 @@ export function cost(usd: number): string {
   return usd >= 0.01 || usd === 0 ? `$${usd.toFixed(2)}` : `$${usd.toFixed(3)}`;
 }
 
+/**
+ * Channel instructions for the agent (`welcome.gateway.agent_instructions`, ACP systemPrompt append).
+ * Static: part of the cached prompt prefix, no per-user data.
+ */
+export const AGENT_INSTRUCTIONS = `Пользователь общается с тобой через Telegram-бота, обычно с телефона, а не в терминале.
+- Он не видит файловую систему. Каждый файл, который ты создал или изменил для него (документ, отчёт, картинку, архив), отправь в чат инструментом send_message с files, иначе он его не получит. Рабочие файлы кода в репозитории отправлять не нужно.
+- Пиши кратко: экран маленький, широкие таблицы и длинные блоки кода читаются плохо.`;
+
 export const T = {
   pairingHint:
     "Этот бот работает только с привязанным агентом.\nПопросите агента: «подключи телеграм» — он пришлёт ссылку для привязки.",

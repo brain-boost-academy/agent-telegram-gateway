@@ -111,7 +111,7 @@ Every test file starts with a `protects=…; fails_when=…; no_claim=…` card.
 ## Protocol dependency (D13)
 
 `package.json` pins the protocol release tgz from the public connector repo:
-`https://github.com/brain-boost-academy/agent-websocket-connector/releases/download/protocol-v1.2.0/brain-boost-academy-agent-protocol-1.2.0.tgz`.
+`https://github.com/brain-boost-academy/agent-websocket-connector/releases/download/protocol-v1.3.0/brain-boost-academy-agent-protocol-1.3.0.tgz`.
 To move to a new protocol version, run `npm install <new release URL>` and commit `package.json` and `package-lock.json`.
 For local work against an unreleased protocol, temporarily install the sibling checkout
 (`npm install ../agent-websocket-connector/packages/protocol`) and do not commit that change.
@@ -134,6 +134,9 @@ For local work against an unreleased protocol, temporarily install the sibling c
 
 ## What the connector must do for this UX
 
+- `welcome.gateway.agent_instructions` carries static Telegram instructions for the agent (`AGENT_INSTRUCTIONS` in
+  `src/telegram/texts.ts`: the user cannot see the file system, so created files go to the chat through `send_message`;
+  keep answers short). The connector passes them as ACP `systemPrompt` (protocol ≥ 1.3.0); older connectors ignore them.
 - `conversation_id` is `String(tg_chat_id)` (private chat = user id); it is in `welcome.pairing.conversation_id` and
   every `pairing.changed{paired:true}`. Messages for other conversation ids are not shown (durable ones are acked).
 - Send `sync` after every `welcome` (running turns with `text_so_far`, `steps`, `current_tool`, `started_at`; all pending

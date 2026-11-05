@@ -15,7 +15,7 @@ import { Media } from "./telegram/media.ts";
 import { COMMANDS } from "./telegram/texts.ts";
 import { WsServer } from "./ws/server.ts";
 
-export const VERSION = "0.2.1";
+export const VERSION = "0.3.0";
 export const ADMIN_CHANNEL = "gateway_admin";
 
 /** Sent by the admin CLI through Postgres NOTIFY so the running gateway reacts immediately. */

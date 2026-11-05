@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { WebSocket } from "ws";
 import { CloseCode } from "@brain-boost-academy/agent-protocol";
 import { VERSION } from "../../src/app.ts";
+import { AGENT_INSTRUCTIONS } from "../../src/telegram/texts.ts";
 import { runAdmin } from "../../src/admin/commands.ts";
 import { ConnectorLink } from "../../src/ws/link.ts";
 import { freshDb, type TestDb } from "../helpers/db.ts";
@@ -30,7 +31,7 @@ test("valid token → welcome with limits and pairing info; last_seen_at updated
   const c = await FakeConnector.connect(h.wsUrl, token);
   assert.deepEqual(c.welcome, {
     protocol: 1,
-    gateway: { kind: "telegram", label: "Telegram", version: VERSION },
+    gateway: { kind: "telegram", label: "Telegram", version: VERSION, agent_instructions: AGENT_INSTRUCTIONS },
     connector_id: id,
     limits: { max_inbound_file_bytes: 20 * 1024 * 1024, max_outbound_file_bytes: 50 * 1024 * 1024 },
     pairing: { paired: true, user_display: "@owner", conversation_id: String(OWNER.id) },

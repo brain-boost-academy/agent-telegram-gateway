@@ -14,6 +14,7 @@ import {
 } from "@brain-boost-academy/agent-protocol";
 import type { Repo } from "../db/repo.ts";
 import { log } from "../log.ts";
+import { AGENT_INSTRUCTIONS } from "../telegram/texts.ts";
 import { ConnectorLink } from "./link.ts";
 import type { Registry } from "./registry.ts";
 import { bearer, hashToken } from "./tokens.ts";
@@ -218,7 +219,7 @@ export class WsServer {
     const pairing = await this.#o.handler.pairingInfo(link.connectorId);
     link.peer.send("welcome", {
       protocol: PROTOCOL_VERSION,
-      gateway: { kind: "telegram", label: this.#o.label, version: this.#o.version },
+      gateway: { kind: "telegram", label: this.#o.label, version: this.#o.version, agent_instructions: AGENT_INSTRUCTIONS },
       connector_id: link.connectorId,
       limits: LIMITS,
       pairing,
