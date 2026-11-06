@@ -1,5 +1,5 @@
 // protects=Flow 3 voice → download (Bot API file URL) → ASR (multipart + Bearer) → «🎤 text» reply → prompt origin voice;
-//   ASR error → «Не удалось распознать» and no prompt; Flow 4 photo album (media_group_id debounce) → blob upload with sendBufferBlob,
+//   ASR error → «Не удалось распознать» and no prompt; Flow 4 photo album (collected for burstMs, own timer) → blob upload with sendBufferBlob,
 //   one prompt with all attachments + caption; outbound notify.files via BlobReceiver → sendDocument; >50 MB blob → too_large;
 // fails_when=a prompt is sent after an ASR failure, album items become separate prompts, attachments reference blobs the connector
 //   did not store, a notify file is not sent as a document, an oversize blob is accepted;
@@ -59,8 +59,7 @@ test("photo album → two blobs stored by the connector → one prompt with both
   h.tg.files.set("ph1", a);
   h.tg.files.set("ph2", b);
   const before = c.received("conversation.prompt").length;
-  await h.feed(photoUpdate(OWNER, "ph1", { group: "g1", caption: "Что на фото?" }));
-  await h.feed(photoUpdate(OWNER, "ph2", { group: "g1" }));
+  await h.feedBurst(photoUpdate(OWNER, "ph1", { group: "g1", caption: "Что на фото?" }), photoUpdate(OWNER, "ph2", { group: "g1" }));
   const p = await c.waitFor("conversation.prompt", (x: { attachments?: string[] }) => (x.attachments?.length ?? 0) === 2);
   assert.equal(c.received("conversation.prompt").length, before + 1);
   const payload = p.payload as { text: string; attachments: string[]; origin: string };

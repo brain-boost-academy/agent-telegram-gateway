@@ -17,6 +17,11 @@ export class ChatQueue {
     return next;
   }
 
+  /** Chats with queued or running work. */
+  get busy(): number {
+    return this.#tails.size;
+  }
+
   /** Wait until every queued update has been processed (tests, shutdown). */
   async drain(): Promise<void> {
     while (this.#tails.size) await Promise.all([...this.#tails.values()]);

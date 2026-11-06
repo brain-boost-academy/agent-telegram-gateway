@@ -15,7 +15,7 @@ src/gateway.ts         shared state per connector (agents, session.state, pendin
 src/ws/                server (/v1/connect, auth, hello/welcome, ping), link (Peer + BlobReceiver), registry (one live
                        socket, 4409), replace-alert (R19), events (connector → Telegram, durable dedupe, sync), tokens
 src/telegram/          bot (grammY + auto-retry + throttler, TG_PROXY), handlers, commands, inbound (prompt), media
-                       (voice/albums/files), render (streaming answer + status), markdown (→ TG HTML, split 4096),
+                       (voice, files, the per-chat collection of messages sent together), render (streaming answer + status), markdown (→ TG HTML, split 4096),
                        status, permissions, elicitation (forms + arming), interactions, pairing, buttons (callbacks)
 src/asr/client.ts      giga-runner client
 src/db/                migrations/*.sql, own runner (schema_migrations), repo
@@ -121,6 +121,9 @@ For local work against an unreleased protocol, temporarily install the sibling c
 - `.github/workflows/ci.yml` — push to main / PR: `npm ci`, typecheck, test with a postgres:17 service.
 - `.github/workflows/image.yml` — tag `vX.Y.Z`: the same tests, then build and push `ghcr.io/<repo>:<version>` and `:sha-…`.
 
+The gateway version lives only in `package.json` (`src/app.ts` reads it into `VERSION`, sent to connectors in `welcome`
+and logged at start). A release bumps `package.json` and `package-lock.json` (`npm version X.Y.Z --no-git-tag-version`).
+
 ## M0 spikes owned by the gateway
 
 - **(d) ogg/opus voice through giga-runner — works.** A 6.4 s Russian sample encoded like a Telegram voice note
@@ -154,8 +157,23 @@ For local work against an unreleased protocol, temporarily install the sibling c
 - Durable messages are acked with `delivered {id: durableKey()}` only after Telegram accepted them; resend until acked.
   `notify` blobs must be re-sent before every resend; a `notify` referencing an unknown blob gets `error invalid_message`.
   Durable messages while unpaired get `error not_paired` (drop the `notify`, R16).
-- Inbound files: the gateway uploads each file with `sendBufferBlob` (≤ 20 MB) and waits for `blob.stored`, then sends one
-  `conversation.prompt {attachments:[blob_id…], text: caption}` per message/album.
+- Messages sent together become one prompt: texts and files of one chat that arrive less than 1 s apart (`burstMs`) are
+  collected and sent as one `conversation.prompt`, at most 5 s after the first of them (`burstMaxMs`). This covers
+  «share to Telegram» with a comment (Telegram sends the comment and the shared item as two messages) and albums.
+  `text` = the texts and file captions in arrival order, joined with a blank line. Two messages that reply to different
+  messages are not merged (each goes to its own session); a reply plus a plain message go to the replied session.
+  Every prompt is therefore sent up to 1 s after the user's last message.
+  - Merged: text, photo, document, video, album items, file captions.
+  - At most 256 KB of text and 10 files per prompt; a message that would pass that starts the next prompt.
+  - Not merged: voice, audio files and video notes (they go through ASR as before, and first send what was collected as
+    its own prompt); stickers, locations, contacts are ignored (they also send what was collected first). A command,
+    an answer to an agent question or a button click also sends what was collected before it runs.
+  - On shutdown the gateway sends what is collected, waiting at most 4 s (`stopFlushMs`); what did not make it is
+    logged as `pending messages not delivered on shutdown` (collected chats and messages, plus chats whose updates were
+    still being processed).
+- Inbound files: the gateway uploads each file with `sendBufferBlob` (≤ 20 MB) and waits for `blob.stored`, then sends
+  `conversation.prompt {attachments:[blob_id…], text}` for the collected messages. If any file fails, the user gets the
+  error and nothing from that collection is sent.
 - Elicitation answers: `{action:"accept", content:{<key>: const}}` or `{<key>_custom: text}` for «Свой вариант»;
   multi-select sends an array of consts; «Отмена» sends `{action:"cancel"}`. Form fields are asked in `properties` order.
 - `prompt.accepted.queued_position > 0` is shown as «⏳ в очереди: N».

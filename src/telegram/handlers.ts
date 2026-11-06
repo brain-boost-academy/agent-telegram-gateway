@@ -4,7 +4,6 @@ import type { Gateway } from "../gateway.ts";
 import { log } from "../log.ts";
 import { onMenuClick, runCommand } from "./commands.ts";
 import { routeIncoming } from "./elicitation.ts";
-import { ownerLink, sendPrompt } from "./inbound.ts";
 import type { Click } from "./interactions.ts";
 import { audioOf, fileOf, type Media } from "./media.ts";
 import { COMMANDS, T } from "./texts.ts";
@@ -30,15 +29,31 @@ export function isBotCommand(text: string, botUsername: string): boolean {
   return cmd !== null && KNOWN_COMMANDS.has(cmd[0]);
 }
 
+/** An update that `Media` collects into the chat's next prompt: a text prompt or a photo/document/video. */
+function collectable(gw: Gateway, ctx: Context): boolean {
+  const m = ctx.message;
+  if (!m) return false;
+  if (m.text !== undefined) {
+    if (parseCommand(m.text, gw.botUsername)?.[0] === "start") return false;
+    return routeIncoming(gw.arming.get(m.chat.id), m.text, (t) => isBotCommand(t, gw.botUsername)) === "prompt";
+  }
+  return fileOf(m) !== undefined;
+}
+
 /**
  * Telegram updates → connector. Private chats only. Each chat is processed in order on its own
- * queue so a slow ASR/upload in one chat does not block others.
+ * queue so a slow ASR/upload in one chat does not block others. Text prompts and files are collected for `burstMs`
+ * (see `Media`), everything else runs at once.
  */
 export function installHandlers(bot: Bot, gw: Gateway, media: Media): void {
   bot.use((ctx, next) => {
     const chat = ctx.chat;
     if (!chat || chat.type !== "private" || !ctx.from) return;
-    void gw.chats.run(chat.id, next);
+    void gw.chats.run(chat.id, async () => {
+      // Anything that is not collected first sends what is, so a command or a click never overtakes an earlier message.
+      if (!collectable(gw, ctx)) await media.flushSafe(chat.id);
+      await next();
+    });
   });
 
   bot.on("callback_query:data", (ctx) => onCallback(gw, ctx));
@@ -64,6 +79,8 @@ export function installHandlers(bot: Bot, gw: Gateway, media: Media): void {
     const chatId = ctx.chat.id;
     const text = ctx.message.text;
     const route = routeIncoming(gw.arming.get(chatId), text, (t) => isBotCommand(t, gw.botUsername));
+    // arming may have changed since the middleware's check (connector events): an answer/command never overtakes a collection
+    if (route !== "prompt") await media.flushSafe(chatId);
     if (route === "command") {
       await gw.interactions.disarmChat(chatId);
       const cmd = parseCommand(text, gw.botUsername);
@@ -71,8 +88,7 @@ export function installHandlers(bot: Bot, gw: Gateway, media: Media): void {
       return;
     }
     if (route === "answer") return gw.interactions.answerArmed(chatId, text);
-    const o = await ownerLink(gw, chatId, ctx.from.id);
-    if (o) await sendPrompt(gw, o, chatId, text, "text", { replyTo: ctx.message.reply_to_message?.message_id });
+    await media.text(chatId, ctx.from.id, text, ctx.message.reply_to_message?.message_id);
   });
 
   bot.on("message", async (ctx) => {

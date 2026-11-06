@@ -17,8 +17,12 @@ import { ReplaceAlert } from "./ws/replace-alert.ts";
 export type Timings = {
   /** Min interval between edits of one streaming turn. */
   flushMs: number;
-  /** media_group_id debounce. */
-  albumMs: number;
+  /** Texts/files of one chat closer than this become one prompt (share with a comment, albums). */
+  burstMs: number;
+  /** A collection is sent at most this long after its first message, however fast messages keep coming. */
+  burstMaxMs: number;
+  /** On shutdown, how long to wait for collected messages to be sent before closing connectors. */
+  stopFlushMs: number;
   /** Owner approval / re-pair confirmation timeout (R3b). */
   approvalMs: number;
   /** Pairing code TTL. */
@@ -27,7 +31,15 @@ export type Timings = {
   pairingTtlMs: number;
 };
 
-export const DEFAULT_TIMINGS: Timings = { flushMs: 1000, albumMs: 1000, approvalMs: 10 * 60_000, codeTtlMs: 10 * 60_000, pairingTtlMs: 60_000 };
+export const DEFAULT_TIMINGS: Timings = {
+  flushMs: 1000,
+  burstMs: 1000,
+  burstMaxMs: 5000,
+  stopFlushMs: 4000,
+  approvalMs: 10 * 60_000,
+  codeTtlMs: 10 * 60_000,
+  pairingTtlMs: 60_000,
+};
 
 type Cached = { row: PairingRow | null; at: number };
 

@@ -9,7 +9,19 @@ import { T } from "./texts.ts";
 import { sendHtml } from "./tg.ts";
 
 type FileItem = { fileId: string; size?: number; name: string; mime: string };
-type Album = { chatId: number; userId: number; items: FileItem[]; caption?: string; replyTo?: number; timer: NodeJS.Timeout };
+/** Messages of one chat waiting for the collection window to close (texts include file captions, in arrival order). */
+type Collection = {
+  userId: number;
+  texts: string[];
+  /** UTF-8 size of `texts` joined. */
+  bytes: number;
+  files: FileItem[];
+  parts: number;
+  replyTo?: number;
+  firstAt: number;
+  timer?: NodeJS.Timeout;
+};
+type Part = { text?: string; file?: FileItem; replyTo?: number };
 
 function stamp(d: number): string {
   return new Date(d * 1000).toISOString().slice(0, 19).replace(/[:T]/g, "-");
@@ -40,17 +52,31 @@ export function audioOf(m: Message): FileItem | undefined {
   return undefined;
 }
 
+/** A collection is sent before it would pass these: far below the 1 MiB protocol frame, and a bounded upload. */
+export const COLLECTION_MAX_TEXT_BYTES = 256 * 1024;
+export const COLLECTION_MAX_FILES = 10;
+
 export class Media {
   #gw: Gateway;
-  #albums = new Map<string, Album>();
+  #pending = new Map<number, Collection>();
+  /** Taken by `flush` and not sent yet (shutdown reporting). */
+  #sending = new Set<Collection>();
+  #stopped = false;
 
   constructor(gw: Gateway) {
     this.#gw = gw;
   }
 
   stop(): void {
-    for (const a of this.#albums.values()) clearTimeout(a.timer);
-    this.#albums.clear();
+    this.#stopped = true;
+    for (const c of this.#pending.values()) clearTimeout(c.timer);
+    this.#pending.clear();
+  }
+
+  /** Collections not sent yet (collected or in flight) and the Telegram messages in them. */
+  unsent(): { chats: number; parts: number } {
+    const all = [...this.#pending.values(), ...this.#sending];
+    return { chats: all.length, parts: all.reduce((n, c) => n + c.parts, 0) };
   }
 
   async #fetch(f: FileItem): Promise<Buffer> {
@@ -85,27 +111,79 @@ export class Media {
     await sendPrompt(this.#gw, o, chatId, text, "voice", { replyTo: m.reply_to_message?.message_id });
   }
 
-  /** Photo/document. Albums (media_group_id) are collected for `albumMs` after the last item (Flow 4). */
-  async file(chatId: number, userId: number, m: Message): Promise<void> {
-    const f = fileOf(m)!;
-    if (!m.media_group_id) return this.#upload(chatId, userId, [f], m.caption, m.reply_to_message?.message_id);
-    const key = `${chatId}:${m.media_group_id}`;
-    const album = this.#albums.get(key);
-    if (album) {
-      clearTimeout(album.timer);
-      album.items.push(f);
-      album.caption ??= m.caption;
-      album.replyTo ??= m.reply_to_message?.message_id;
-    }
-    const a: Album = album ?? { chatId, userId, items: [f], caption: m.caption, replyTo: m.reply_to_message?.message_id, timer: undefined as never };
-    a.timer = setTimeout(() => {
-      this.#albums.delete(key);
-      void this.#gw.chats.run(chatId, () => this.#upload(a.chatId, a.userId, a.items, a.caption, a.replyTo));
-    }, this.#gw.timings.albumMs);
-    this.#albums.set(key, a);
+  /** A text prompt: collected like a file (see `#add`). Call inside the chat queue. */
+  text(chatId: number, userId: number, text: string, replyTo?: number): Promise<void> {
+    return this.#add(chatId, userId, { text, replyTo });
   }
 
-  async #upload(chatId: number, userId: number, items: FileItem[], caption: string | undefined, replyTo: number | undefined): Promise<void> {
+  /** Photo/document/video, album item or not: collected (see `#add`). Call inside the chat queue. */
+  file(chatId: number, userId: number, m: Message): Promise<void> {
+    return this.#add(chatId, userId, { text: m.caption, file: fileOf(m)!, replyTo: m.reply_to_message?.message_id });
+  }
+
+  /**
+   * Texts and files of one chat that arrive within `burstMs` of each other become one prompt (a share with a comment
+   * comes as two messages; an album as one message per item). The window restarts on every message but closes at most
+   * `burstMaxMs` after the first one. Two different replies are never merged: they target different sessions. A collection
+   * that would pass COLLECTION_MAX_TEXT_BYTES / COLLECTION_MAX_FILES is sent first.
+   */
+  async #add(chatId: number, userId: number, part: Part): Promise<void> {
+    if (this.#stopped) return; // after the shutdown budget: counted in the warning's `queues`
+    let c = this.#pending.get(chatId);
+    const bytes = part.text ? Buffer.byteLength(part.text) + 2 : 0; // + the "\n\n" separator
+    const differentReply = part.replyTo !== undefined && c?.replyTo !== undefined && c.replyTo !== part.replyTo;
+    const full = c && (c.bytes + bytes > COLLECTION_MAX_TEXT_BYTES || (part.file && c.files.length >= COLLECTION_MAX_FILES));
+    if (c && (differentReply || full)) {
+      await this.flushSafe(chatId);
+      c = undefined;
+    }
+    if (!c) {
+      c = { userId, texts: [], bytes: 0, files: [], parts: 0, firstAt: Date.now() };
+      this.#pending.set(chatId, c);
+    }
+    c.parts++;
+    c.bytes += bytes;
+    if (part.text) c.texts.push(part.text);
+    if (part.file) c.files.push(part.file);
+    c.replyTo ??= part.replyTo;
+    clearTimeout(c.timer);
+    const { burstMs, burstMaxMs } = this.#gw.timings;
+    const col = c;
+    c.timer = setTimeout(
+      () => void this.#gw.chats.run(chatId, () => (this.#pending.get(chatId) === col ? this.flush(chatId) : Promise.resolve())),
+      Math.max(0, Math.min(burstMs, c.firstAt + burstMaxMs - Date.now())),
+    );
+  }
+
+  /** Send what the chat has collected. Call inside the chat queue (the timer and `flushAll` do). */
+  async flush(chatId: number): Promise<void> {
+    const c = this.#pending.get(chatId);
+    if (!c) return;
+    this.#pending.delete(chatId);
+    clearTimeout(c.timer);
+    this.#sending.add(c);
+    try {
+      const text = c.texts.join("\n\n");
+      if (c.files.length) return await this.#upload(chatId, c.userId, c.files, text, c.replyTo);
+      const o = await ownerLink(this.#gw, chatId, c.userId);
+      if (o) await sendPrompt(this.#gw, o, chatId, text, "text", { replyTo: c.replyTo });
+    } finally {
+      this.#sending.delete(c);
+    }
+  }
+
+  /** `flush` that logs instead of throwing, so the update that triggered it still runs. */
+  async flushSafe(chatId: number): Promise<void> {
+    await this.flush(chatId).catch((err) => log.error("sending collected messages failed", { chat: chatId, err }));
+  }
+
+  /** Send every chat's collection now, in each chat's queue (shutdown, tests). */
+  async flushAll(): Promise<void> {
+    await Promise.all([...this.#pending.keys()].map((chatId) => this.#gw.chats.run(chatId, () => this.flush(chatId))));
+  }
+
+  /** Upload every file as a blob, then one prompt with all of them. Any failure → error message, no prompt. */
+  async #upload(chatId: number, userId: number, items: FileItem[], text: string, replyTo: number | undefined): Promise<void> {
     const o = await ownerLink(this.#gw, chatId, userId);
     if (!o) return;
     const blobIds: string[] = [];
@@ -120,6 +198,6 @@ export class Media {
         return;
       }
     }
-    await sendPrompt(this.#gw, o, chatId, caption ?? "", "text", { replyTo, attachments: blobIds });
+    await sendPrompt(this.#gw, o, chatId, text, "text", { replyTo, attachments: blobIds });
   }
 }

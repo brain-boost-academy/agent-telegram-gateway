@@ -165,7 +165,10 @@ export type Harness = {
   tg: FakeTelegram;
   asr: FakeAsr;
   wsUrl: string;
+  /** One update, processed to the end: whatever it left collected (`burstMs`) is sent before this returns. */
   feed: (u: Update) => Promise<void>;
+  /** Updates back to back, nothing flushed: collected messages go out on the gateway's own timer. */
+  feedBurst: (...u: Update[]) => Promise<void>;
   stop: () => Promise<void>;
 };
 
@@ -194,7 +197,8 @@ export async function startGateway(
     transformer: tg.transformer,
     throttle: false,
     // pairingTtlMs 0: fixtures write pairings straight into Postgres (makeConnector), bypassing the gateway's invalidation.
-    timings: { flushMs: 20, albumMs: 50, pairingTtlMs: 0, ...o.timings },
+    // burstMs/burstMaxMs well above one update's processing time (a Postgres lookup each), so feedBurst parts never split.
+    timings: { flushMs: 20, burstMs: 300, burstMaxMs: 800, pairingTtlMs: 0, ...o.timings },
     pingIntervalMs: o.pingIntervalMs,
     blobDoneTtlMs: o.blobDoneTtlMs,
   });
@@ -206,6 +210,12 @@ export async function startGateway(
     wsUrl: `ws://127.0.0.1:${port}/v1/connect`,
     feed: async (u) => {
       await app.bot.handleUpdate(u);
+      await app.gw.chats.drain();
+      await app.media.flushAll();
+      await app.gw.chats.drain();
+    },
+    feedBurst: async (...us) => {
+      for (const u of us) await app.bot.handleUpdate(u);
       await app.gw.chats.drain();
     },
     stop: async () => {

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { Bot, Transformer } from "grammy";
@@ -15,7 +16,8 @@ import { Media } from "./telegram/media.ts";
 import { COMMANDS } from "./telegram/texts.ts";
 import { WsServer } from "./ws/server.ts";
 
-export const VERSION = "0.3.0";
+/** package.json is the only place the version lives (next to src/ and dist/, also in the image). */
+export const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 export const ADMIN_CHANNEL = "gateway_admin";
 
 /** Sent by the admin CLI through Postgres NOTIFY so the running gateway reacts immediately. */
@@ -171,11 +173,30 @@ export class App {
   async stop(): Promise<void> {
     clearInterval(this.#cleanup);
     if (this.bot.isRunning()) await this.bot.stop();
+    // bot.stop() has confirmed the updates to Telegram: collected messages are sent now or lost.
+    await this.#flushOnStop();
     this.media.stop();
     this.gw.stop();
     await this.#unlisten?.().catch(() => {});
     await this.ws.close();
     await new Promise<void>((resolve) => (this.health ? this.health.close(() => resolve()) : resolve()));
     await this.gw.chats.drain();
+  }
+
+  /** Send collected messages, waiting at most `stopFlushMs` so the rest of stop fits main.ts's force exit. */
+  async #flushOnStop(): Promise<void> {
+    let timer: NodeJS.Timeout | undefined;
+    const sent = (async () => {
+      // updates already taken from Telegram finish first (one behind a slow ASR/upload is collected only then)
+      await this.gw.chats.drain();
+      await this.media.flushAll();
+      await this.gw.chats.drain();
+      return true;
+    })();
+    const timeout = new Promise<false>((resolve) => (timer = setTimeout(() => resolve(false), this.gw.timings.stopFlushMs)));
+    const ok = await Promise.race([sent, timeout]);
+    clearTimeout(timer);
+    // queues: chats whose updates were still being processed (not collected yet, so not counted in parts)
+    if (!ok) log.warn("pending messages not delivered on shutdown", { ...this.media.unsent(), queues: this.gw.chats.busy });
   }
 }

@@ -33,6 +33,21 @@ On real Telegram (staging bot) the same list applies; only the transport differs
 
 Found and fixed during the run: background Bash (`run_in_background`) was killed by the after-turn close → connector now holds such sessions for `busy_hold_minutes`.
 
+## Messages sent together (v0.3.2, not run yet)
+
+Messages of one chat less than 1 s apart become one `conversation.prompt` (README, «Messages sent together»).
+Check on the staging bot from a phone; in the gateway log each case is one `conversation.prompt`:
+
+| Scenario | Expected |
+|---|---|
+| browser «Share → Telegram → bot» with a link and a comment | one prompt `comment\n\nlink`, one agent turn about the link |
+| gallery: share 2 photos with a comment | one prompt, the comment + both attachments |
+| comment as a reply to an agent answer + a link | one prompt in the replied session |
+| plain text | the prompt goes out ≈1 s after sending |
+| text, then `/stop` or a button click right after | the text reaches the agent before the command runs |
+| audio file or sticker shared with a comment | not merged by design: the comment goes alone, the audio goes through ASR, the sticker is ignored |
+| `kubectl rollout restart` right after sending a text | the text still reaches the agent (or `pending messages not delivered on shutdown` in the log) |
+
 Not covered here: AC3/12/14/16/17 (covered by integration tests and `npm run test:adapters` in the connector), real Telegram HTML acceptance and rate limits, real `TG_PROXY`.
 
 **AC18 is not covered by anything yet.** AC18 = scenarios 4, 7, 9, 10 with `opencode acp` (`/agent opencode`). The connector's opt-in `test/adapters/opencode.test.ts` (skipped when opencode is not installed) covers initialize caps, one turn, session reload and `session/list`; its own card says it makes no claim about permissions (opencode's default config allows tools). opencode's permission requests (AC7) and `/stop` mid-stream (AC9) have never been run, here or in CI. The gateway side is agent-neutral (integration tests use a fake connector), so what is unverified is opencode's ACP behaviour behind the connector. Manual run to close it:
